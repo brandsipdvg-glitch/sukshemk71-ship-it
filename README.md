@@ -72,10 +72,20 @@ The receiver (`js/decoder.js`) is a small software-defined radio:
    - sync-word correlation ≥ 0.6,
    - a **quiet guard** (the 12 tiles before the candidate must be near-zero),
      which is what rejects half-window false matches of the alternating train.
+   A near-perfect lock (correlation ≥ 0.85) bypasses the guard, so a new
+   transmission that starts barely after the previous one still locks.
 5. **Decoding** — length, payload, CRC32 and end marker are read symbol by
    symbol. CRC-32 is recomputed and compared; the end marker must also match.
+   If the tones go silent while a (possibly corrupted-length) packet is still
+   open, a **quiet-continuation watchdog** bails out after ~0.5 s and the
+   receiver resumes searching instead of waiting for minutes.
 6. **Result** — valid packets are handed to the page as UTF-8 text; invalid
    packets raise a **transmission error** and the receiver keeps listening.
+
+The receive page also runs a **capture health watchdog**: if no audio frames
+arrive for ~3 s while listening (a browser/OS mic hiccup after sleep or a
+device switch), it automatically restarts the receiver up to 3 times and logs
+each recovery in the Recent log.
 
 This chain is verified offline by `test/acoustic.test.js`: it synthesises the
 actual FSK waveform for a packet, feeds it through the decoder, and asserts the
@@ -181,9 +191,12 @@ volume or distance.
   transmitting speaker a little farther from the receiving mic.
 - **No lock at all** — check the debug *Detected frequency*: it should jump
   between ≈1000 and ≈2000 Hz during a transmission. If it stays flat, the mic
-  isn't hearing the tones.
-- **Back-to-back packets** — the quiet-guard acquisition requires a short gap of
-  silence before each transmission, so leave ≥ 0.5 s between sends.
+  isn't hearing the tones. If *Input rate* reads 0 f/s, the microphone graph has
+  stalled — the page tries to restart it automatically; otherwise press Stop
+  then Start.
+- **Back-to-back packets** — the quiet-guard acquisition prefers a short gap of
+  silence before each transmission, but packets sent barely after the previous
+  one (< 0.3 s) still lock thanks to the high-confidence bypass.
 
 ---
 

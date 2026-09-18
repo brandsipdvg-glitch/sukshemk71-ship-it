@@ -81,6 +81,7 @@
      */
     async play(bits, options = {}) {
       if (this.playing) await this.stop();
+      this._nodes = [];
 
       const volume = options.volume == null ? 0.9 : options.volume;
       const onProgress = options.onProgress || (() => {});

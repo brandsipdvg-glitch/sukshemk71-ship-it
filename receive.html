@@ -58,6 +58,7 @@
           <div><label>Preamble score</label><output id="dbgScore">—</output></div>
           <div><label>Payload length</label><output id="dbgLen">—</output></div>
           <div><label>Soft metric</label><output id="dbgSoft">—</output></div>
+          <div><label>Input rate</label><output id="dbgFps">—</output></div>
           <div><label>Audio context</label><output id="dbgCtx">—</output></div>
         </div>
       </section>
@@ -92,7 +93,7 @@
       const dbg = {
         state: el("dbgState"), freq: el("dbgFreq"), bit: el("dbgBit"),
         packet: el("dbgPacket"), score: el("dbgScore"), len: el("dbgLen"),
-        soft: el("dbgSoft"), ctx: el("dbgCtx"),
+        soft: el("dbgSoft"), fps: el("dbgFps"), ctx: el("dbgCtx"),
       };
 
       const rx = new SS.Audio.Receiver();
@@ -101,6 +102,17 @@
          total symbols for the current message as it streams in. */
       let lastSymbols = 0;
       let lastMessageLen = 0;
+
+      /* Capture-health watchdog: browsers/OSes occasionally gag the mic graph
+         (sleep, device switch). If no frames arrive for a few seconds while we
+         are supposed to be listening, self-recover by restarting capture. */
+      let captureAliveAt = Date.now();
+      let listening = false;
+      let autoRestarts = 0;
+      let healthTimer = null;
+      let lastFrameIndex = 0;
+      let lastHeartbeatAt = 0;
+      let rateConfigured = false;
 
       /* ------------------------------------------------------------ */
       /* Status helpers                                                */
@@ -169,6 +181,19 @@
           dbg.soft.textContent = d.lastSoft;
           dbg.ctx.textContent = rx.ctx ? rx.ctx.state : (d.frameIndex ? "closed" : "—");
 
+          /* Liveness heartbeat for the watchdog + frames/sec readout. */
+          const now = Date.now();
+          if (d.frameIndex) {
+            if (lastFrameIndex && now - lastHeartbeatAt < 5000) {
+              const dt = (now - lastHeartbeatAt) / 1000;
+              const fps = dt > 0 ? (d.frameIndex - lastFrameIndex) / dt : 0;
+              if (fps > 0) dbg.fps.textContent = fps.toFixed(0) + " f/s";
+            }
+            lastFrameIndex = d.frameIndex;
+            lastHeartbeatAt = now;
+            captureAliveAt = now;
+          }
+
           /* While decoding, animate the progress bar with received symbols. */
           if (d.state === "synced" && d.totalSymbols > 0) {
             setProgress(Math.min(0.95, d.symbolIndex / d.totalSymbols),
@@ -185,7 +210,6 @@
 
       async function startListening() {
         listenBtn.disabled = true;
-        let rateConfigured = false;
         try {
           await rx.start((chunk) => {
             /* Configure the decoder with the real device rate before the
@@ -210,11 +234,19 @@
         setStatus("listening", "Listening on the microphone…");
         appendLog("Listening started (sample rate " + rx.ctx.sampleRate + " Hz).");
         received.readOnly = true;
+
+        listening = true;
+        autoRestarts = 0;
+        captureAliveAt = Date.now();
+        if (healthTimer) clearInterval(healthTimer);
+        healthTimer = setInterval(healthCheck, 1500);
       }
 
       async function stopListening() {
         listenBtn.disabled = false;
         stopBtn.disabled = true;
+        listening = false;
+        if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
         try { await rx.stop(); } catch (e) { /* noop */ }
         decoder.reset();
         setStatus("idle", "Stopped listening.");
@@ -225,6 +257,51 @@
         dbg.packet.textContent = "—";
         dbg.score.textContent = "—";
         dbg.soft.textContent = "—";
+        dbg.fps.textContent = "—";
+      }
+
+      /* ------------------------------------------------------------ */
+      /* Capture health watchdog                                       */
+      /* ------------------------------------------------------------ */
+
+      async function healthCheck() {
+        if (!listening) return;
+        if (Date.now() - captureAliveAt < 3000) return; /* frames flowing */
+
+        if (autoRestarts >= 2) {
+          clearInterval(healthTimer);
+          healthTimer = null;
+          setStatus("error",
+            "Microphone capture stalled for several seconds and did not recover " +
+            "automatically. Press Stop, then Start — or reload the page.");
+          appendLog("Capture stalled; automatic recovery exhausted (3 attempts).");
+          await stopListening();
+          return;
+        }
+
+        autoRestarts++;
+        appendLog("Health check: no audio frames for 3s — restarting receiver " +
+          "(attempt " + autoRestarts + " of 3).");
+        setStatus("listening", "Recovering audio capture…");
+        try { await rx.stop(); } catch (e) { /* noop */ }
+        decoder.reset();
+        captureAliveAt = Date.now();
+        try {
+          await rx.start((chunk) => {
+            if (!rateConfigured && rx.ctx) {
+              decoder.setSampleRate(rx.ctx.sampleRate);
+              rateConfigured = true;
+            }
+            decoder.processSamples(chunk);
+          });
+          decoder.setSampleRate(rx.ctx.sampleRate);
+          setStatus("listening", "Listening on the microphone…");
+          appendLog("Receiver restarted by health check.");
+        } catch (e) {
+          setStatus("error", "Receiver restart failed — " + e.message);
+          appendLog("Receiver restart failed: " + e.message);
+          await stopListening();
+        }
       }
 
       listenBtn.addEventListener("click", startListening);

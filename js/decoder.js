@@ -50,10 +50,18 @@
 
   /* Matched-filter acquisition thresholds (tunable). */
   const ACQ_SCORE_FULL = 0.65;  /* full 48-symbol correlation            */
+  const ACQ_SCORE_HIGH = 0.85;  /* near-perfect lock — bypasses the guard */
   const ACQ_SCORE_SYNC = 0.6;   /* 16-bit sync-tail correlation          */
   const ACQ_ABS_MIN = 0.18;     /* average |symbol soft| (signal present) */
   const ACQ_GUARD_FRAMES = 12;  /* frames checked just before the start  */
   const ACQ_GUARD_MAX = 0.3;    /* max avg |soft| allowed in the guard   */
+
+  /* If a locked packet goes silent for more than this many consecutive frames,
+   the real transmission has ended. Abandon the lock (even if the decoded
+   length implied a longer packet) so the receiver resumes searching instead of
+   sitting in "Decoding" for up to several minutes. */
+  const SYNC_QUIET_FRAMES = 20; /* ≈ 0.5 s of quiet */
+  const SYNC_QUIET_ABS = 0.15;  /* |soft| below this counts as quiet        */
 
   const LENGTH_BITS = P.LENGTH_FIELD_BITS || 16;
   const CRC_BITS = P.CRC_BITS || 32;
@@ -288,7 +296,7 @@
         bestScore >= ACQ_SCORE_FULL &&
         this._absAvg >= ACQ_ABS_MIN &&
         this._scoreSync >= ACQ_SCORE_SYNC &&
-        this._guard <= ACQ_GUARD_MAX
+        (this._guard <= ACQ_GUARD_MAX || bestScore >= ACQ_SCORE_HIGH)
       ) {
         this.synced = true;
         this.startIndex = bestS;
@@ -413,7 +421,18 @@
         0, Math.min(totalSymbols, Math.floor(framesAvail / this._ratio)));
 
       /* Wait until the whole packet is buffered (sample-accurate length). */
-      if (L < S + this._framesForSymbols(totalSymbols - 1)) return;
+      const needsFrames = this._framesForSymbols(totalSymbols - 1);
+
+      /* Quiet-continuation watchdog: if the last ~0.5 s of audio went silent
+         while we are still waiting, the real transmission has already ended
+         (e.g. the decoded length was corrupted to far more than reality).
+         Abandon the lock so a real later transmission is not missed. */
+      if (L - S < needsFrames && this._tailQuiet(SYNC_QUIET_FRAMES)) {
+        this._fail("Transmission went silent — resynchronizing.");
+        return;
+      }
+
+      if (L < S + needsFrames) return;
 
       const len = this.payloadLen;
 
@@ -467,6 +486,22 @@
       } else {
         this._fail("End marker mismatch — packet framing was corrupted.");
       }
+    }
+
+    /**
+     * True when the most recent `count` frames of soft history are all quiet
+     * (|soft| below SYNC_QUIET_ABS) — used to detect that the transmission
+     * has actually ended while a (possibly over-long) packet is still "open".
+     * @param {number} count
+     * @returns {boolean}
+     */
+    _tailQuiet(count) {
+      const L = this._soft.length;
+      const from = Math.max(0, L - count);
+      for (let i = from; i < L; i++) {
+        if (Math.abs(this._soft[i]) >= SYNC_QUIET_ABS) return false;
+      }
+      return true;
     }
 
     /**

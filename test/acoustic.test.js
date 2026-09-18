@@ -38,6 +38,7 @@ const SYMBOL_N = Math.round(FS * P.SYMBOL_SECONDS); /* 4410 samples */
  * @param {number} [opts.leadIn=0.3]   - silence before the first tone (s)
  * @param {number} [opts.trailing=1.0] - silence after the last tone (s)
  * @param {number} [opts.flipBit=-1]   - symbol index to corrupt (negative = none)
+ * @param {object} [opts.overrideBits] - { symbolIndex: bitValue } overrides
  * @returns {Float32Array}
  */
 function synthesize(bits, opts = {}) {
@@ -47,6 +48,7 @@ function synthesize(bits, opts = {}) {
     leadIn = 0.3,
     trailing = 1.0,
     flipBit = -1,
+    overrideBits = null,
   } = opts;
 
   const leadN = Math.round(leadIn * FS);
@@ -64,7 +66,8 @@ function synthesize(bits, opts = {}) {
   };
 
   for (let i = 0; i < bits.length; i++) {
-    const bit = i === flipBit ? 1 - bits[i] : bits[i];
+    let bit = i === flipBit ? 1 - bits[i] : bits[i];
+    if (overrideBits && overrideBits[i] !== undefined) bit = overrideBits[i];
     const freq = bit ? P.FREQ_ONE : P.FREQ_ZERO;
     const start = leadN + i * SYMBOL_N;
     for (let s = 0; s < SYMBOL_N; s++) {
@@ -72,6 +75,29 @@ function synthesize(bits, opts = {}) {
       write(start + s, t, gain * Math.sin(2 * Math.PI * freq * t));
     }
   }
+  return out;
+}
+
+/**
+ * Concatenates waveforms, inserting `gapSeconds` of silence between them.
+ * @param {Float32Array[]} signals
+ * @param {number} [gapSeconds=0]
+ * @returns {Float32Array}
+ */
+function concatenate(signals, gapSeconds = 0) {
+  const gapN = Math.round(gapSeconds * FS);
+  const total = signals.reduce((n, s) => n + s.length, 0) +
+    gapN * Math.max(0, signals.length - 1);
+  const out = new Float32Array(total);
+  let pos = 0;
+  signals.forEach((sig, i) => {
+    out.set(sig, pos);
+    pos += sig.length;
+    if (i < signals.length - 1) {
+      out.fill(0, pos, pos + gapN);
+      pos += gapN;
+    }
+  });
   return out;
 }
 
@@ -238,6 +264,55 @@ test("quiet but clean tones still decode (gain 0.2, + noise)", () => {
   const msg = events.find((e) => e.type === "message");
   assert.ok(msg, "expected quiet message, got " + JSON.stringify(events));
   assert.strictEqual(msg.text, "Whisper link");
+});
+
+/* 11. Rapid back-to-back sends ------------------------------------------------- */
+test("a new transmission starting <300ms after the previous one still locks " +
+     "(guard has a high-confidence escape)", () => {
+  const m1 = SS.Encoder.encodeText("First");
+  const m2 = SS.Encoder.encodeText("Second");
+  /* Gap shorter than the 12-frame (300 ms) quiet-guard window: the previous
+     message's tail occupies part of the guard of the next candidate. */
+  const pcm = concatenate([
+    synthesize(m1.packetBits, { leadIn: 0.3, trailing: 0.0 }),
+    synthesize(m2.packetBits, { leadIn: 0.05, trailing: 0.5 }),
+  ], 0.1);
+  const { events } = runDecoder(pcm);
+  const texts = events.filter((e) => e.type === "message").map((e) => e.text);
+  assert.deepStrictEqual(texts, ["First", "Second"],
+    "expected both messages, got " + JSON.stringify(events));
+});
+
+/* 12. Stuck-lock watchdog ------------------------------------------------------- */
+test("a corrupt length field times out (watchdog) and the receiver recovers " +
+     "for a real follow-up packet", () => {
+  const real = SS.Encoder.encodeText("AB");            /* length 2 */
+  const later = SS.Encoder.encodeText("Real one");     /* decoded later */
+
+  /* Corrupt the 16-bit length field (symbols 48..63, MSB-first) so it claims
+     a 12-byte packet while only 2 bytes of payload are actually sent. */
+  const override = {};
+  for (let j = 0; j < 16; j++) {
+    const v = (12 >> (15 - j)) & 1;
+    if (v !== undefined && v === 1) override[48 + j] = 1;
+    else override[48 + j] = 0;
+  }
+
+  /* The bogus length makes the decoder wait for audio that never comes; once
+     the real tones end and ~0.5 s of silence streams in, the quiet watchdog
+     must abort the lock and go back to searching. */
+  const pcm = concatenate([
+    synthesize(real.packetBits, { leadIn: 0.3, trailing: 0.1, overrideBits: override }),
+    synthesize(later.packetBits, { leadIn: 0.3, trailing: 0.5 }),
+  ], 25); /* 25 s of silence after the short junk burst, then a real packet */
+
+  const { events } = runDecoder(pcm);
+  const err = events.find((e) => e.type === "error");
+  assert.ok(err && /silent/i.test(err.reason),
+    "expected a quiet-watchdog error, got " + JSON.stringify(events));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg && msg.text === "Real one",
+    "decoder must recover and decode a later packet, got " + JSON.stringify(events));
 });
 
 /* ------------------------------------------------------------------------ */
