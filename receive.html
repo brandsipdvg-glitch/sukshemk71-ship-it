@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="SoundShare receiver — demodulate FSK audio tones from your microphone back into text.">
+  <title>SoundShare — Receive</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="index.html">SoundShare</a>
+      <span class="crumb">/ Receive</span>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Listening</h2>
+        <div class="controls">
+          <button id="listenBtn" class="btn primary">Start Listening</button>
+          <button id="stopBtn" class="btn stop" disabled>Stop Listening</button>
+        </div>
+        <p class="muted">
+          Point this device's microphone toward the sending device's speaker.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <div class="statusline">
+          <span id="statusPill" class="pill idle">Idle</span>
+          <span id="statusText">Not listening</span>
+        </div>
+
+        <div class="progress">
+          <div id="progressBar" class="progressbar"></div>
+        </div>
+        <div id="progressLabel" class="muted">Press Start Listening</div>
+      </section>
+
+      <section class="card">
+        <h2>Received message</h2>
+        <textarea id="received" class="msgbox" rows="5" readonly
+          placeholder="The decoded message will appear here."></textarea>
+        <div class="controls">
+          <button id="copyBtn" class="btn" disabled>Copy message</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Receiver debug</h2>
+        <div class="debuggrid">
+          <div><label>State</label><output id="dbgState">—</output></div>
+          <div><label>Detected frequency</label><output id="dbgFreq">—</output></div>
+          <div><label>Current decoded bit</label><output id="dbgBit">—</output></div>
+          <div><label>Packet status</label><output id="dbgPacket">—</output></div>
+          <div><label>Preamble score</label><output id="dbgScore">—</output></div>
+          <div><label>Payload length</label><output id="dbgLen">—</output></div>
+          <div><label>Soft metric</label><output id="dbgSoft">—</output></div>
+          <div><label>Audio context</label><output id="dbgCtx">—</output></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent log</h2>
+        <pre id="log" class="muted" style="white-space:pre-wrap;margin:0;font-family:inherit;">—</pre>
+      </section>
+    </main>
+
+    <footer>SoundShare · Phase 1 · 1000/2000 Hz FSK @ 100 ms per bit</footer>
+  </div>
+
+  <script src="js/crc.js"></script>
+  <script src="js/encoder.js"></script>
+  <script src="js/decoder.js"></script>
+  <script src="js/audio.js"></script>
+  <script>
+    (() => {
+      "use strict";
+
+      const el = (id) => document.getElementById(id);
+      const listenBtn = el("listenBtn");
+      const stopBtn = el("stopBtn");
+      const copyBtn = el("copyBtn");
+      const received = el("received");
+      const pill = el("statusPill");
+      const statusText = el("statusText");
+      const progressBar = el("progressBar");
+      const progressLabel = el("progressLabel");
+      const log = el("log");
+      const dbg = {
+        state: el("dbgState"), freq: el("dbgFreq"), bit: el("dbgBit"),
+        packet: el("dbgPacket"), score: el("dbgScore"), len: el("dbgLen"),
+        soft: el("dbgSoft"), ctx: el("dbgCtx"),
+      };
+
+      const rx = new SS.Audio.Receiver();
+
+      /* Preamble progress for the "Mesh/Listening" step indicator:
+         total symbols for the current message as it streams in. */
+      let lastSymbols = 0;
+      let lastMessageLen = 0;
+
+      /* ------------------------------------------------------------ */
+      /* Status helpers                                                */
+      /* ------------------------------------------------------------ */
+
+      function setStatus(name, text) {
+        pill.className = "pill " + name;
+        pill.textContent =
+          name === "decoding" ? "Decoding"
+          : name === "received" ? "Message received"
+          : name === "error" ? "Transmission error"
+          : name.charAt(0).toUpperCase() + name.slice(1);
+        statusText.textContent = text;
+      }
+
+      function setProgress(frac, label) {
+        progressBar.style.width = Math.max(0, Math.min(100, frac * 100)) + "%";
+        progressLabel.textContent = label;
+      }
+
+      function appendLog(line) {
+        const stamp = new Date().toLocaleTimeString();
+        log.textContent = (log.textContent === "—" ? "" : log.textContent + "\n") +
+          "[" + stamp + "] " + line;
+        log.scrollTop = log.scrollHeight;
+      }
+
+      /* ------------------------------------------------------------ */
+      /* Decoder handlers                                              */
+      /* ------------------------------------------------------------ */
+
+      const decoder = new SS.Decoder({
+        onSync(meta) {
+          setStatus("decoding", "Preamble locked — decoding packet…");
+          setProgress(0.1,
+            "Synchronised (score " + meta.score.toFixed(2) + ") — receiving…");
+          appendLog("Preamble detected (score " + meta.score.toFixed(2) + ").");
+        },
+
+        onMessage(text, meta) {
+          received.value = text;
+          lastMessageLen = meta.bytes;
+          lastSymbols = meta.totalBits;
+          copyBtn.disabled = false;
+          setStatus("received",
+            "Message received (" + meta.bytes + " bytes · " +
+            meta.totalBits + " bits) — CRC32 verified.");
+          setProgress(1, "Packet verified with CRC32 — complete.");
+          appendLog("Message received: " + JSON.stringify(text));
+        },
+
+        onError(reason) {
+          setStatus("error", reason);
+          setProgress(0, "Packet rejected — listening for the next transmission.");
+          appendLog("Error: " + reason);
+        },
+
+        onDebug(d) {
+          /* Update the debug grid ~ every frame is fine; cheap enough. */
+          dbg.state.textContent = d.state;
+          dbg.freq.textContent = d.measuredHz ? d.measuredHz + " Hz" : "—";
+          dbg.bit.textContent = d.lastBit == null ? "—" : String(d.lastBit);
+          dbg.packet.textContent = d.bitProgress;
+          dbg.score.textContent = d.score ? d.score.toFixed(2) : "—";
+          dbg.len.textContent = d.payloadLen == null ? "—" : d.payloadLen + " B";
+          dbg.soft.textContent = d.lastSoft;
+          dbg.ctx.textContent = rx.ctx ? rx.ctx.state : (d.frameIndex ? "closed" : "—");
+
+          /* While decoding, animate the progress bar with received symbols. */
+          if (d.state === "synced" && d.totalSymbols > 0) {
+            setProgress(Math.min(0.95, d.symbolIndex / d.totalSymbols),
+              "Decoding " + d.symbolIndex + " / " + d.totalSymbols + " symbols");
+          }
+        },
+      });
+
+      decoder.setSampleRate(44100); /* corrected on start() if different */
+
+      /* ------------------------------------------------------------ */
+      /* Start / stop                                                  */
+      /* ------------------------------------------------------------ */
+
+      async function startListening() {
+        listenBtn.disabled = true;
+        let rateConfigured = false;
+        try {
+          await rx.start((chunk) => {
+            /* Configure the decoder with the real device rate before the
+               first audio chunk is processed. */
+            if (!rateConfigured && rx.ctx) {
+              decoder.setSampleRate(rx.ctx.sampleRate);
+              rateConfigured = true;
+            }
+            decoder.processSamples(chunk);
+          });
+        } catch (e) {
+          setStatus("error", "Microphone unavailable — " + e.message);
+          appendLog("getUserMedia failed: " + e.message);
+          listenBtn.disabled = false;
+          return;
+        }
+        if (rx.ctx && rx.ctx.state === "running") {
+          decoder.setSampleRate(rx.ctx.sampleRate);
+        }
+        stopBtn.disabled = false;
+        copyBtn.disabled = received.value.length === 0;
+        setStatus("listening", "Listening on the microphone…");
+        appendLog("Listening started (sample rate " + rx.ctx.sampleRate + " Hz).");
+        received.readOnly = true;
+      }
+
+      async function stopListening() {
+        listenBtn.disabled = false;
+        stopBtn.disabled = true;
+        try { await rx.stop(); } catch (e) { /* noop */ }
+        decoder.reset();
+        setStatus("idle", "Stopped listening.");
+        appendLog("Listening stopped.");
+        dbg.state.textContent = "—";
+        dbg.freq.textContent = "—";
+        dbg.bit.textContent = "—";
+        dbg.packet.textContent = "—";
+        dbg.score.textContent = "—";
+        dbg.soft.textContent = "—";
+      }
+
+      listenBtn.addEventListener("click", startListening);
+      stopBtn.addEventListener("click", stopListening);
+
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(received.value);
+          appendLog("Message copied to clipboard.");
+        } catch (e) {
+          /* Clipboard API may be denied; fall back to select-all. */
+          received.select();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

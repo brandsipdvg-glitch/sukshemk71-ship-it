@@ -1,0 +1,414 @@
+/* ==========================================================================
+   SoundShare — global stylesheet
+   Dark "instrument panel" look shared by all three pages.
+   ========================================================================== */
+
+:root {
+  --bg-0: #0b1220;
+  --bg-1: #101a2e;
+  --panel: #0f172a;
+  --panel-2: #131e36;
+  --border: #1e293b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #22d3ee;
+  --accent-dim: rgba(34, 211, 238, 0.12);
+  --good: #34d399;
+  --good-dim: rgba(52, 211, 153, 0.12);
+  --warn: #fbbf24;
+  --warn-dim: rgba(251, 191, 36, 0.12);
+  --err: #f87171;
+  --err-dim: rgba(248, 113, 113, 0.12);
+  --mono: "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(34, 211, 238, 0.12), transparent 60%),
+    radial-gradient(1000px 500px at 100% 0%, rgba(52, 211, 153, 0.08), transparent 55%),
+    linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  line-height: 1.5;
+}
+
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+/* ---------- header / brand ---------- */
+
+.top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.brand {
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  text-decoration: none;
+}
+
+.brand:hover {
+  text-decoration: none;
+  color: #7dd3fc;
+}
+
+.crumb {
+  color: var(--muted);
+  font-size: 18px;
+}
+
+/* ---------- cards ---------- */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--muted);
+}
+
+.card h2::after {
+  content: "";
+  display: block;
+  width: 34px;
+  height: 2px;
+  margin-top: 6px;
+  background: linear-gradient(90deg, var(--accent), transparent);
+}
+
+/* ---------- hero / index ---------- */
+
+.hero {
+  text-align: center;
+  padding: 46px 20px 30px;
+}
+
+.hero h1 {
+  font-size: 44px;
+  margin: 0 0 6px;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.hero .tagline {
+  color: var(--muted);
+  margin: 0 auto 8px;
+  max-width: 520px;
+}
+
+.actions {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  margin: 34px 0 10px;
+}
+
+.actions .btn {
+  min-width: 170px;
+  padding: 20px 30px;
+  font-size: 22px;
+  text-decoration: none;
+}
+
+.btn-send {
+  background: linear-gradient(180deg, #22d3ee, #0891b2);
+  color: #06212b;
+}
+
+.btn-send:hover {
+  background: linear-gradient(180deg, #38ddf8, #0ea5c4);
+  transform: translateY(-2px);
+}
+
+.btn-receive {
+  background: linear-gradient(180deg, #34d399, #059669);
+  color: #05281b;
+}
+
+.btn-receive:hover {
+  background: linear-gradient(180deg, #4adeb0, #10b981);
+  transform: translateY(-2px);
+}
+
+.how {
+  margin: 34px auto 0;
+  max-width: 560px;
+  text-align: left;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.how ul {
+  padding-left: 18px;
+}
+
+.how code,
+.inline-code {
+  font-family: var(--mono);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  padding: 12px 22px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--panel-2);
+  transition: transform 0.08s ease, background 0.15s ease, filter 0.15s ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, #22d3ee, #0891b2);
+  color: #06212b;
+}
+
+.btn.stop {
+  background: var(--err-dim);
+  color: var(--err);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.controls .btn {
+  flex: 0 0 auto;
+}
+
+.vol {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+  width: 130px;
+}
+
+/* ---------- text areas ---------- */
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 12px 14px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+textarea[readonly] {
+  color: var(--text);
+}
+
+.meta {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* ---------- status ---------- */
+
+.statusline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* pulse animation for "active" states */
+.pill.listening::before,
+.pill.transmitting::before,
+.pill.decoding::before {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+.pill.idle { color: var(--muted); }
+
+.pill.encoding { color: var(--warn); background: var(--warn-dim); border-color: rgba(251, 191, 36, 0.35); }
+
+.pill.listening,
+.pill.transmitting { color: var(--accent); background: var(--accent-dim); border-color: rgba(34, 211, 238, 0.35); }
+
+.pill.decoding { color: var(--warn); background: var(--warn-dim); border-color: rgba(251, 191, 36, 0.35); }
+
+.pill.complete,
+.pill.received { color: var(--good); background: var(--good-dim); border-color: rgba(52, 211, 153, 0.35); }
+
+.pill.error { color: var(--err); background: var(--err-dim); border-color: rgba(248, 113, 113, 0.35); }
+
+.progress {
+  margin: 16px 0 8px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progressbar {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+  transition: width 0.1s linear;
+}
+
+#progressLabel {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+/* ---------- debug panel ---------- */
+
+.debuggrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.debuggrid > div {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.debuggrid label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.debuggrid output {
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.msgbox {
+  margin-top: 12px;
+}
+
+.msgbox + .controls {
+  margin-top: 10px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+footer {
+  margin-top: 26px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.75;
+}

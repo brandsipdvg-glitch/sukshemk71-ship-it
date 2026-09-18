@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="SoundShare sender — encode text into FSK audio tones and transmit through your speaker.">
+  <title>SoundShare — Send</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="index.html">SoundShare</a>
+      <span class="crumb">/ Send</span>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Compose message</h2>
+        <textarea id="message" rows="5" maxlength="2048"
+          placeholder="Type a message to transmit over sound…"></textarea>
+        <div class="meta" id="metaText">0 bytes · 0 bits · 0.0 s</div>
+
+        <div class="controls">
+          <button id="sendBtn" class="btn primary">Send</button>
+          <button id="stopBtn" class="btn stop" disabled>Stop</button>
+          <label class="vol">Volume
+            <input type="range" id="volume" min="0" max="1" step="0.05" value="0.9">
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <div class="statusline">
+          <span id="statusPill" class="pill idle">Idle</span>
+          <span id="statusText">Ready</span>
+        </div>
+        <div class="progress">
+          <div id="progressBar" class="progressbar"></div>
+        </div>
+        <div id="progressLabel" class="muted">Waiting for a message</div>
+      </section>
+
+      <section class="card">
+        <h2>Transmitter debug</h2>
+        <div class="debuggrid">
+          <div><label>Current frequency</label><output id="dbgFreq">—</output></div>
+          <div><label>Current bit</label><output id="dbgBit">—</output></div>
+          <div><label>Bit progress</label><output id="dbgProgress">—</output></div>
+          <div><label>Packet bits</label><output id="dbgTotal">—</output></div>
+          <div><label>Elapsed</label><output id="dbgElapsed">—</output></div>
+          <div><label>Audio context</label><output id="dbgCtx">—</output></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>SoundShare · Phase 1 · 1000/2000 Hz FSK @ 100 ms per bit</footer>
+  </div>
+
+  <script src="js/crc.js"></script>
+  <script src="js/encoder.js"></script>
+  <script src="js/audio.js"></script>
+  <script>
+    (() => {
+      "use strict";
+
+      const el = (id) => document.getElementById(id);
+      const message = el("message");
+      const sendBtn = el("sendBtn");
+      const stopBtn = el("stopBtn");
+      const volume = el("volume");
+      const metaText = el("metaText");
+      const pill = el("statusPill");
+      const statusText = el("statusText");
+      const progressBar = el("progressBar");
+      const progressLabel = el("progressLabel");
+      const dbg = {
+        freq: el("dbgFreq"), bit: el("dbgBit"), prog: el("dbgProgress"),
+        total: el("dbgTotal"), elapsed: el("dbgElapsed"), ctx: el("dbgCtx"),
+      };
+
+      const tx = new SS.Audio.Transmitter();
+
+      /* ------------------------------------------------------------ */
+      /* Small UI helpers                                              */
+      /* ------------------------------------------------------------ */
+
+      function setStatus(name, text) {
+        pill.className = "pill " + name;
+        pill.textContent = name.charAt(0).toUpperCase() + name.slice(1);
+        statusText.textContent = text;
+      }
+
+      function setProgress(frac, label) {
+        progressBar.style.width = Math.max(0, Math.min(100, frac * 100)) + "%";
+        progressLabel.textContent = label;
+      }
+
+      function formatDuration(seconds) {
+        if (seconds < 60) return seconds.toFixed(1) + " s";
+        const m = Math.floor(seconds / 60);
+        const s = Math.round(seconds - m * 60);
+        return m + " min " + s + " s";
+      }
+
+      /* ------------------------------------------------------------ */
+      /* Live stats while typing                                       */
+      /* ------------------------------------------------------------ */
+
+      function updateStats() {
+        try {
+          const p = SS.Encoder.encodeText(message.value);
+          metaText.textContent =
+            p.byteCount + " byte" + (p.byteCount === 1 ? "" : "s") + " · " +
+            p.totalBits + " bits · ~" + formatDuration(p.durationSeconds);
+        } catch (e) {
+          metaText.textContent = message.value.trim()
+            ? "⚠ " + e.message
+            : "0 bytes · 0 bits · 0.0 s";
+        }
+      }
+      message.addEventListener("input", updateStats);
+      updateStats();
+
+      /* ------------------------------------------------------------ */
+      /* Transmission                                                  */
+      /* ------------------------------------------------------------ */
+
+      async function send() {
+        if (tx.playing) return;
+
+        const text = message.value;
+        if (!text.trim()) {
+          setStatus("error", "Message is empty — type something first.");
+          return;
+        }
+
+        /* Phase 1: encoding. */
+        let packet;
+        try {
+          setStatus("encoding", "Encoding text to an FSK packet…");
+          await new Promise((r) => setTimeout(r, 40)); /* paint the pill */
+          packet = SS.Encoder.encodeText(text);
+        } catch (e) {
+          setStatus("error", "Encoding failed: " + e.message);
+          return;
+        }
+
+        dbg.total.textContent = packet.totalBits + " bits";
+        dbg.ctx.textContent = tx.ctx ? tx.ctx.state : "new";
+
+        sendBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        /* Phase 2: transmitting (tones on air). */
+        setStatus("transmitting", "Playing " + packet.totalBits + " tones…");
+
+        const done = tx.play(packet.packetBits, {
+          volume: parseFloat(volume.value),
+          onProgress: (doneBits, totalBits) => {
+            const t = doneBits * SS.Protocol.SYMBOL_SECONDS;
+            const freq = doneBits < totalBits
+              ? (packet.packetBits[doneBits] ? "2000 Hz" : "1000 Hz")
+              : "—";
+            setProgress(doneBits / totalBits,
+              doneBits + " / " + totalBits + " bits · " +
+              formatDuration(t) + " elapsed");
+            dbg.freq.textContent = freq;
+            dbg.bit.textContent = doneBits < totalBits
+              ? String(packet.packetBits[doneBits]) : "—";
+            dbg.prog.textContent = doneBits + " / " + totalBits;
+            dbg.elapsed.textContent = formatDuration(t);
+          },
+        });
+
+        setProgress(0, "Tones scheduled — transmission starting…");
+
+        let aborted = false;
+        try {
+          aborted = await done;
+        } catch (e) {
+          /* play() itself never rejects; safety net only. */
+        }
+
+        /* Phase 3: complete (or stopped — handled by the Stop button). */
+        if (aborted) return;
+        setProgress(1, "All " + packet.totalBits + " bits emitted.");
+        setStatus("complete", "Transmission complete (~" +
+          formatDuration(packet.durationSeconds) + ").");
+
+        dbg.freq.textContent = "—";
+        dbg.bit.textContent = "—";
+        dbg.prog.textContent = "—";
+        dbg.elapsed.textContent = "—";
+
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+
+      stopBtn.addEventListener("click", async () => {
+        await tx.stop();
+        setProgress(0, "Stopped by user.");
+        setStatus("error", "Transmission stopped.");
+        dbg.freq.textContent = "—";
+        dbg.bit.textContent = "—";
+        dbg.prog.textContent = "—";
+        dbg.elapsed.textContent = "—";
+        sendBtn.disabled = false;
+        stopBtn.disabled = true;
+      });
+
+      sendBtn.addEventListener("click", send);
+
+      /* Cmd/Ctrl+Enter sends from the textarea. */
+      message.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") send();
+      });
+    })();
+  </script>
+</body>
+</html>

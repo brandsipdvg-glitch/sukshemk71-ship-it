@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="SoundShare — transfer text between devices using only sound (FSK tones through speakers and microphones).">
+  <title>SoundShare — Acoustic Data Transfer</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <a class="brand" href="index.html">SoundShare</a>
+      <span class="crumb">/ Home</span>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>SoundShare</h1>
+        <p class="tagline">
+          True peer-to-peer data transfer over the air. Your message never
+          touches a network — it travels purely as audio between a speaker and
+          a microphone.
+        </p>
+
+        <div class="actions">
+          <a class="btn btn-send" href="send.html">Send</a>
+          <a class="btn btn-receive" href="receive.html">Receive</a>
+        </div>
+      </section>
+
+      <section class="card how">
+        <h2>How it works</h2>
+        <ul>
+          <li>Text is <span class="inline-code">UTF-8</span> encoded to bytes, then to bits.</li>
+          <li>Each bit becomes a tone: <span class="inline-code">0 = 1000 Hz</span>, <span class="inline-code">1 = 2000 Hz</span>.</li>
+          <li>Every bit is a clean <span class="inline-code">100 ms</span> symbol — frequency-shift keying (FSK).</li>
+          <li>The transmitting page plays the tones through its speaker.</li>
+          <li>The receiving page listens, demodulates the tones back to bits,
+              checks the <span class="inline-code">CRC32</span>, and shows your message.</li>
+        </ul>
+        <p class="muted">
+          No internet, no server, no Bluetooth, no Wi-Fi, no QR codes. The sound
+          itself is the data link. See the README for the full packet protocol.
+        </p>
+      </section>
+    </main>
+
+    <footer>SoundShare · Phase 1 · text only · static site, ready for GitHub Pages</footer>
+  </div>
+</body>
+</html>
