@@ -22,6 +22,12 @@
         <div class="meta" id="metaText">0 bytes · 0 bits · 0.0 s</div>
 
         <div class="controls">
+          <div class="modegroup" style="display:inline-flex;gap:14px;align-items:center;margin-right:14px">
+            <span><input type="radio" name="mode" id="modeFast" checked>
+              <label for="modeFast" style="margin:0">⚡ Fast ≈1.5 s (4-FSK)</label></span>
+            <span><input type="radio" name="mode" id="modeSlow">
+              <label for="modeSlow" style="margin:0">🐢 Slow ≈20 s (2-FSK)</label></span>
+          </div>
           <button id="sendBtn" class="btn primary">Send</button>
           <button id="stopBtn" class="btn stop" disabled>Stop</button>
           <label class="vol">Volume
@@ -55,7 +61,7 @@
       </section>
     </main>
 
-    <footer>SoundShare · Phase 1 · 1000/2000 Hz FSK @ 100 ms per bit</footer>
+    <footer>SoundShare · ⚡ Fast ≈1.5 s (4-FSK, 15 ms/tone) · 🐢 Slow ≈20 s (2-FSK, 100 ms/tone)</footer>
   </div>
 
   <script src="js/crc.js"></script>
@@ -70,6 +76,7 @@
       const sendBtn = el("sendBtn");
       const stopBtn = el("stopBtn");
       const volume = el("volume");
+      const modeFast = el("modeFast");
       const metaText = el("metaText");
       const pill = el("statusPill");
       const statusText = el("statusText");
@@ -81,6 +88,16 @@
       };
 
       const tx = new SS.Audio.Transmitter();
+
+      const MODE = {
+        fast: { label: "Fast", encode: SS.Encoder.encodeTextQuad,
+                play: (pkt, o) => tx.playQuads(pkt.quads, o),
+                unit: "symbol", toneOf: (pkt, i) => SS.Protocol.QUAD_TONES[pkt.quads[i]] + " Hz" },
+        slow: { label: "Slow", encode: SS.Encoder.encodeText,
+                play: (pkt, o) => tx.play(pkt.packetBits, o),
+                unit: "bit", toneOf: (pkt, i) => (pkt.packetBits[i] ? "2000 Hz" : "1000 Hz") },
+      };
+      const currentMode = () => (modeFast.checked ? MODE.fast : MODE.slow);
 
       /* ------------------------------------------------------------ */
       /* Small UI helpers                                              */
@@ -109,11 +126,14 @@
       /* ------------------------------------------------------------ */
 
       function updateStats() {
+        const mode = currentMode();
         try {
-          const p = SS.Encoder.encodeText(message.value);
+          const p = mode.encode(message.value);
           metaText.textContent =
             p.byteCount + " byte" + (p.byteCount === 1 ? "" : "s") + " · " +
-            p.totalBits + " bits · ~" + formatDuration(p.durationSeconds);
+            (p.totalBits ? p.totalBits + " bits · " : p.totalSymbols + " symbols · ") +
+            "~" + formatDuration(p.durationSeconds) +
+            (mode === MODE.fast ? " (fast)" : " (slow)");
         } catch (e) {
           metaText.textContent = message.value.trim()
             ? "⚠ " + e.message
@@ -121,6 +141,9 @@
         }
       }
       message.addEventListener("input", updateStats);
+      modeFast.addEventListener("change", updateStats);
+      document.querySelectorAll("input[name=mode]").forEach((r) =>
+        r.addEventListener("change", updateStats));
       updateStats();
 
       /* ------------------------------------------------------------ */
@@ -136,41 +159,50 @@
           return;
         }
 
+        const mode = currentMode();
+        const P = SS.Protocol;
+        const unit = mode.unit;
+
         /* Phase 1: encoding. */
         let packet;
         try {
-          setStatus("encoding", "Encoding text to an FSK packet…");
+          setStatus("encoding", "Encoding text (" + mode.label + ")…");
           await new Promise((r) => setTimeout(r, 40)); /* paint the pill */
-          packet = SS.Encoder.encodeText(text);
+          packet = mode.encode(text);
         } catch (e) {
           setStatus("error", "Encoding failed: " + e.message);
           return;
         }
 
-        dbg.total.textContent = packet.totalBits + " bits";
+        const totalBits = packet.totalBits || packet.totalSymbols * 2;
+        dbg.total.textContent =
+          (packet.totalSymbols || packet.totalBits) + " " + unit + "s" +
+          (mode === MODE.fast ? " (~" + totalBits + " bits)" : "");
         dbg.ctx.textContent = tx.ctx ? tx.ctx.state : "new";
 
         sendBtn.disabled = true;
         stopBtn.disabled = false;
 
         /* Phase 2: transmitting (tones on air). */
-        setStatus("transmitting", "Playing " + packet.totalBits + " tones…");
+        setStatus("transmitting",
+          "Playing " + (packet.totalSymbols || packet.totalBits) +
+          " " + unit + "s…");
 
-        const done = tx.play(packet.packetBits, {
+        const done = mode.play(packet, {
           volume: parseFloat(volume.value),
-          onProgress: (doneBits, totalBits) => {
-            const t = doneBits * SS.Protocol.SYMBOL_SECONDS;
-            const freq = doneBits < totalBits
-              ? (packet.packetBits[doneBits] ? "2000 Hz" : "1000 Hz")
-              : "—";
-            setProgress(doneBits / totalBits,
-              doneBits + " / " + totalBits + " bits · " +
-              formatDuration(t) + " elapsed");
+          onProgress: (doneN, totalN) => {
+            const secs = doneN *
+              (mode === MODE.fast ? P.QUAD_SYMBOL_SECONDS : P.SYMBOL_SECONDS);
+            const freq = doneN < totalN ? mode.toneOf(packet, doneN) : "—";
+            setProgress(doneN / totalN,
+              doneN + " / " + totalN + " " + unit + "s · " +
+              formatDuration(secs) + " elapsed");
             dbg.freq.textContent = freq;
-            dbg.bit.textContent = doneBits < totalBits
-              ? String(packet.packetBits[doneBits]) : "—";
-            dbg.prog.textContent = doneBits + " / " + totalBits;
-            dbg.elapsed.textContent = formatDuration(t);
+            dbg.bit.textContent = doneN < totalN
+              ? String(packet.quads ? packet.quads[doneN] : packet.packetBits[doneN])
+              : "—";
+            dbg.prog.textContent = doneN + " / " + totalN;
+            dbg.elapsed.textContent = formatDuration(secs);
           },
         });
 
@@ -185,9 +217,9 @@
 
         /* Phase 3: complete (or stopped — handled by the Stop button). */
         if (aborted) return;
-        setProgress(1, "All " + packet.totalBits + " bits emitted.");
-        setStatus("complete", "Transmission complete (~" +
-          formatDuration(packet.durationSeconds) + ").");
+        setProgress(1, "All tones emitted.");
+        setStatus("complete", "Transmission complete in ~" +
+          formatDuration(packet.durationSeconds) + " (0.2 s lead-in).");
 
         dbg.freq.textContent = "—";
         dbg.bit.textContent = "—";

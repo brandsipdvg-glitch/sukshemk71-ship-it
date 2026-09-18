@@ -80,14 +80,48 @@
      *   finished, or true if the transmission was aborted via stop().
      */
     async play(bits, options = {}) {
+      return this._transmit(
+        (i) => (bits[i] ? P.FREQ_ONE : P.FREQ_ZERO),
+        bits.length,
+        options
+      );
+    }
+
+    /**
+     * Transmits a packet of quad symbols (4-FSK, 2 bits per tone). Each symbol
+     * picks one of P.QUAD_TONES; timing uses P.QUAD_SYMBOL_SECONDS.
+     * @param {number[]} quads - symbol values 0..3
+     * @param {object} [options]
+     * @param {number} [options.volume=0.9] - 0..1 output gain
+     * @param {Function} [options.onProgress] - (symbolsDone, totalSymbols)
+     * @returns {Promise<boolean>}
+     */
+    async playQuads(quads, options = {}) {
+      return this._transmit(
+        (i) => P.QUAD_TONES[quads[i]],
+        quads.length,
+        Object.assign({}, options, {
+          perSymbol: P.QUAD_SYMBOL_SECONDS,
+        })
+      );
+    }
+
+    /**
+     * Shared tone scheduler for play()/playQuads().
+     * @private
+     * @param {Function} freqOf - (index) => frequency in Hz
+     * @param {number} total - number of symbols to transmit
+     * @param {object} options
+     */
+    async _transmit(freqOf, total, options = {}) {
       if (this.playing) await this.stop();
       this._nodes = [];
 
       const volume = options.volume == null ? 0.9 : options.volume;
       const onProgress = options.onProgress || (() => {});
+      const dur = options.perSymbol || P.SYMBOL_SECONDS;
 
       const ctx = await this.ensureContext();
-      const dur = P.SYMBOL_SECONDS;
       const ramp = 0.004; /* 4 ms click-suppression ramps */
 
       /* Small lead-in before the first tone so the mic never clips a partial
@@ -98,8 +132,8 @@
       master.gain.value = volume;
       master.connect(ctx.destination);
 
-      for (let i = 0; i < bits.length; i++) {
-        const freq = bits[i] ? P.FREQ_ONE : P.FREQ_ZERO;
+      for (let i = 0; i < total; i++) {
+        const freq = freqOf(i);
         const osc = ctx.createOscillator();
         osc.type = "sine";
         osc.frequency.value = freq;
@@ -121,7 +155,6 @@
         this._nodes.push(osc, g);
       }
 
-      const total = bits.length;
       this.playing = true;
       this._done = false;
       this._aborted = false;

@@ -32,12 +32,15 @@
       <section class="card how">
         <h2>How it works</h2>
         <ul>
-          <li>Text is <span class="inline-code">UTF-8</span> encoded to bytes, then to bits.</li>
-          <li>Each bit becomes a tone: <span class="inline-code">0 = 1000 Hz</span>, <span class="inline-code">1 = 2000 Hz</span>.</li>
-          <li>Every bit is a clean <span class="inline-code">100 ms</span> symbol — frequency-shift keying (FSK).</li>
+          <li>Text is <span class="inline-code">UTF-8</span> encoded to bytes, then to bits (or 2&ndash;bit "quads").</li>
+          <li><span class="inline-code">⚡ Fast</span> uses four tones (<span class="inline-code">1100 &middot; 1800 &middot; 2500 &middot; 3200 Hz</span>) at
+              <span class="inline-code">15 ms</span> each — a "Hello World" transfers in about 1.5 s.</li>
+          <li><span class="inline-code">🐢 Slow</span> uses classic <span class="inline-code">1000/2000 Hz</span> FSK at
+              <span class="inline-code">100 ms</span> per bit — slower, but more robust in noisy rooms.</li>
           <li>The transmitting page plays the tones through its speaker.</li>
-          <li>The receiving page listens, demodulates the tones back to bits,
-              checks the <span class="inline-code">CRC32</span>, and shows your message.</li>
+          <li>The receiving page listens, auto-detects which mode is on air,
+              demodulates <em>both</em> streams back to bits, checks the
+              <span class="inline-code">CRC32</span>, and shows your message.</li>
         </ul>
         <p class="muted">
           No internet, no server, no Bluetooth, no Wi-Fi, no QR codes. The sound
@@ -46,7 +49,7 @@
       </section>
     </main>
 
-    <footer>SoundShare · Phase 1 · text only · static site, ready for GitHub Pages</footer>
+    <footer>SoundShare · ⚡ Fast ≈1.5 s (4-FSK) · 🐢 Slow ≈20 s (2-FSK) · receiver auto-detects both</footer>
   </div>
 </body>
 </html>

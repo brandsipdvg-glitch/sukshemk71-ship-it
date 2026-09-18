@@ -19,11 +19,13 @@ globalThis.window = undefined;
 require(path.join(__dirname, "..", "js", "crc.js"));
 require(path.join(__dirname, "..", "js", "encoder.js"));
 require(path.join(__dirname, "..", "js", "decoder.js"));
+require(path.join(__dirname, "..", "js", "quaddecoder.js"));
 
 const SS = globalThis.SS;
 const P = SS.Protocol;
 const FS = 44100;
 const SYMBOL_N = Math.round(FS * P.SYMBOL_SECONDS); /* 4410 samples */
+const QUAD_N = Math.round(FS * P.QUAD_SYMBOL_SECONDS); /* 662 samples */
 
 /* ------------------------------------------------------------------------ */
 /* FSK waveform synthesizer (mirror of the Web Audio transmitter)           */
@@ -99,6 +101,65 @@ function concatenate(signals, gapSeconds = 0) {
     }
   });
   return out;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Quad (4-FSK) synthesizer + harness for the "Ultra" fast mode.            */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Renders quad symbols as one of the 4 FSK tones (15 ms each).
+ * @param {number[]} quads - symbol values 0..3
+ * @param {object} [opts]
+ * @param {number} [opts.noise=0], [opts.gain=0.9], [opts.leadIn=0.3]
+ * @param {number} [opts.trailing=0.5]
+ * @param {object} [opts.overrideQuads] - { symbolIndex: quadValue }
+ * @returns {Float32Array}
+ */
+function synthesizeQuads(quads, opts = {}) {
+  const { noise = 0, gain = 0.9, leadIn = 0.3, trailing = 0.5,
+    overrideQuads = null } = opts;
+  const leadN = Math.round(leadIn * FS);
+  const trailN = Math.round(trailing * FS);
+  const out = new Float32Array(leadN + quads.length * QUAD_N + trailN);
+
+  let rngState = 54321;
+  const rng = () => {
+    rngState = (rngState * 1103515245 + 12345) & 0x7fffffff;
+    return rngState / 0x7fffffff - 0.5;
+  };
+
+  for (let i = 0; i < quads.length; i++) {
+    const q = (overrideQuads && overrideQuads[i] !== undefined)
+      ? overrideQuads[i] : quads[i];
+    const freq = P.QUAD_TONES[q];
+    const start = leadN + i * QUAD_N;
+    for (let s = 0; s < QUAD_N; s++) {
+      out[start + s] = gain * Math.sin(2 * Math.PI * freq * (start + s) / FS) +
+        (noise ? noise * rng() : 0);
+    }
+  }
+  return out;
+}
+
+function runQuadDecoder(pcm, opts = {}) {
+  const events = [];
+  const decoder = new SS.QuadDecoder({
+    onSync: (m) => events.push({ type: "sync", ...m }),
+    onMessage: (text, meta) => events.push({ type: "message", text, ...meta }),
+    onError: (reason) => events.push({ type: "error", reason }),
+    onDebug: () => {},
+  }, { sampleRate: FS });
+
+  let idx = 0;
+  const chunkSizes = [4096, 1024, 8192, 512];
+  let c = 0;
+  while (idx < pcm.length) {
+    const n = Math.min(chunkSizes[c++ % chunkSizes.length], pcm.length - idx);
+    decoder.processSamples(pcm.subarray(idx, idx + n));
+    idx += n;
+  }
+  return { decoder, events };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -313,6 +374,146 @@ test("a corrupt length field times out (watchdog) and the receiver recovers " +
   const msg = events.find((e) => e.type === "message");
   assert.ok(msg && msg.text === "Real one",
     "decoder must recover and decode a later packet, got " + JSON.stringify(events));
+});
+
+/* ------------------------------------------------------------------------ */
+/* "Ultra" 4-FSK fast-mode tests                                             */
+/* ------------------------------------------------------------------------ */
+
+/* 13. Quad protocol shape ---------------------------------------------------- */
+test("quad protocol: 4 tones, 32-symbol preamble, 15 ms symbols", () => {
+  assert.strictEqual(P.QUAD_TONES.length, 4);
+  assert.strictEqual(P.QUAD_PREAMBLE.length, 32);
+  assert.strictEqual(P.QUAD_SYMBOL_SECONDS, 0.015);
+});
+
+/* 14. Hello World round trip, fast ------------------------------------------- */
+test('"Hello World" round-trips through the fast (4-FSK) chain in < 2 s', () => {
+  const packet = SS.Encoder.encodeTextQuad("Hello World");
+  assert.strictEqual(packet.totalSymbols, 32 + 8 + 44 + 16 + 8);
+  assert.ok(packet.durationSeconds < 2, "fast packet must be under 2 s");
+
+  const { events } = runQuadDecoder(synthesizeQuads(packet.quads));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected a fast-mode message, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, "Hello World");
+  assert.strictEqual(msg.mode, "fast");
+});
+
+/* 15. Multi-byte / emoji fast -------------------------------------------------- */
+test("emoji + newlines survive a fast round trip", () => {
+  const text = "Line 1\nLine 2 — 你好, 世界 🌍";
+  const packet = SS.Encoder.encodeTextQuad(text);
+  const { events } = runQuadDecoder(synthesizeQuads(packet.quads));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected message, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, text);
+});
+
+/* 16. Fast noise robustness ----------------------------------------------------- */
+test("fast mode passes with light additive noise (0.03)", () => {
+  const packet = SS.Encoder.encodeTextQuad("Fast and noisy");
+  const { events } = runQuadDecoder(
+    synthesizeQuads(packet.quads, { noise: 0.03 }));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected fast message under noise, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, "Fast and noisy");
+});
+
+/* 17. Fast corruption detection -------------------------------------------------- */
+test("fast-mode payload corruption is rejected by CRC32", () => {
+  const packet = SS.Encoder.encodeTextQuad("This will be corrupted");
+  /* Flip one quad inside the payload (index past preamble(32)+length(8)). */
+  const override = { [32 + 8 + 5]: 3 };
+  const { events } = runQuadDecoder(
+    synthesizeQuads(packet.quads, { overrideQuads: override }));
+  const msg = events.find((e) => e.type === "message");
+  const err = events.find((e) => e.type === "error");
+  assert.ok(err, "expected an error event for a corrupt fast packet");
+  assert.ok(!msg, "corrupt fast packet must not produce a message");
+});
+
+/* 18. Mid-stream acquisition, fast ---------------------------------------------- */
+test("fast preamble is found when tones begin mid-stream", () => {
+  const packet = SS.Encoder.encodeTextQuad("Late fast arrival");
+  const { events } = runQuadDecoder(
+    synthesizeQuads(packet.quads, { leadIn: 2.5 }));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected fast late message, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, "Late fast arrival");
+});
+
+/* 19. 48 kHz hardware, fast ------------------------------------------------------ */
+test("fast mode decodes at a 48 kHz sample rate", () => {
+  const packet = SS.Encoder.encodeTextQuad("48k fast");
+  const symN = Math.round(48000 * P.QUAD_SYMBOL_SECONDS);
+  const leadN = Math.round(0.3 * 48000);
+  const out = new Float32Array(leadN + packet.quads.length * symN +
+    Math.round(0.5 * 48000));
+  packet.quads.forEach((q, i) => {
+    const f = P.QUAD_TONES[q];
+    const start = leadN + i * symN;
+    for (let s = 0; s < symN; s++) {
+      out[start + s] = 0.9 * Math.sin(2 * Math.PI * f * (start + s) / 48000);
+    }
+  });
+  const events = [];
+  const decoder = new SS.QuadDecoder({
+    onMessage: (text) => events.push({ type: "message", text }),
+    onError: (r) => events.push({ type: "error", reason: r }),
+    onSync: () => {}, onDebug: () => {},
+  }, { sampleRate: 48000 });
+  decoder.processSamples(out);
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected 48k fast message, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, "48k fast");
+});
+
+/* 20. Attenuated fast signal ------------------------------------------------------ */
+test("fast mode tolerates quiet tones (gain 0.2, + noise 0.02)", () => {
+  const packet = SS.Encoder.encodeTextQuad("Fast whisper");
+  const { events } = runQuadDecoder(
+    synthesizeQuads(packet.quads, { gain: 0.2, noise: 0.02 }));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg, "expected quiet fast message, got " + JSON.stringify(events));
+  assert.strictEqual(msg.text, "Fast whisper");
+});
+
+/* 21. Back-to-back fast sends ------------------------------------------------------ */
+test("two fast transmissions separated by <100 ms both decode", () => {
+  const m1 = SS.Encoder.encodeTextQuad("First");
+  const m2 = SS.Encoder.encodeTextQuad("Second");
+  const pcm = concatenate([
+    synthesizeQuads(m1.quads, { leadIn: 0.3, trailing: 0.0 }),
+    synthesizeQuads(m2.quads, { leadIn: 0.02, trailing: 0.3 }),
+  ], 0.02);
+  const { events } = runQuadDecoder(pcm);
+  const texts = events.filter((e) => e.type === "message").map((e) => e.text);
+  assert.deepStrictEqual(texts, ["First", "Second"],
+    "expected both fast messages, got " + JSON.stringify(events));
+});
+
+/* 22. Fast corrupt length -> quiet watchdog -> recovery ----------------------------- */
+test("fast corrupt length times out (quiet watchdog) and recovers", () => {
+  const real = SS.Encoder.encodeTextQuad("AB");
+  const later = SS.Encoder.encodeTextQuad("Fast real one");
+  /* Claim a 12-byte packet (length = 0x000C) while only 2 bytes play. */
+  const override = {};
+  const lenVal = 0x000C;
+  for (let j = 0; j < 8; j++) {
+    override[32 + j] = (lenVal >> (14 - 2 * j)) & 0x3;
+  }
+  const pcm = concatenate([
+    synthesizeQuads(real.quads, { leadIn: 0.3, trailing: 0.05, overrideQuads: override }),
+    synthesizeQuads(later.quads, { leadIn: 0.3, trailing: 0.3 }),
+  ], 8);
+  const { events } = runQuadDecoder(pcm);
+  const err = events.find((e) => e.type === "error");
+  assert.ok(err && /silent/i.test(err.reason),
+    "expected quiet-watchdog error, got " + JSON.stringify(events));
+  const msg = events.find((e) => e.type === "message");
+  assert.ok(msg && msg.text === "Fast real one",
+    "fast decoder must recover, got " + JSON.stringify(events));
 });
 
 /* ------------------------------------------------------------------------ */

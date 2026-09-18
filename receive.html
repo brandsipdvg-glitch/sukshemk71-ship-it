@@ -52,6 +52,7 @@
         <h2>Receiver debug</h2>
         <div class="debuggrid">
           <div><label>State</label><output id="dbgState">—</output></div>
+          <div><label>Mode</label><output id="dbgMode">—</output></div>
           <div><label>Detected frequency</label><output id="dbgFreq">—</output></div>
           <div><label>Current decoded bit</label><output id="dbgBit">—</output></div>
           <div><label>Packet status</label><output id="dbgPacket">—</output></div>
@@ -69,12 +70,13 @@
       </section>
     </main>
 
-    <footer>SoundShare · Phase 1 · 1000/2000 Hz FSK @ 100 ms per bit</footer>
+    <footer>SoundShare · Fast ≈1.5 s (4-FSK) · Slow ≈20 s (2-FSK) — receiver auto-detects both</footer>
   </div>
 
   <script src="js/crc.js"></script>
   <script src="js/encoder.js"></script>
   <script src="js/decoder.js"></script>
+  <script src="js/quaddecoder.js"></script>
   <script src="js/audio.js"></script>
   <script>
     (() => {
@@ -91,9 +93,10 @@
       const progressLabel = el("progressLabel");
       const log = el("log");
       const dbg = {
-        state: el("dbgState"), freq: el("dbgFreq"), bit: el("dbgBit"),
-        packet: el("dbgPacket"), score: el("dbgScore"), len: el("dbgLen"),
-        soft: el("dbgSoft"), fps: el("dbgFps"), ctx: el("dbgCtx"),
+        state: el("dbgState"), mode: el("dbgMode"), freq: el("dbgFreq"),
+        bit: el("dbgBit"), packet: el("dbgPacket"), score: el("dbgScore"),
+        len: el("dbgLen"), soft: el("dbgSoft"), fps: el("dbgFps"),
+        ctx: el("dbgCtx"),
       };
 
       const rx = new SS.Audio.Receiver();
@@ -141,68 +144,107 @@
       }
 
       /* ------------------------------------------------------------ */
-      /* Decoder handlers                                              */
+      /* Dual-mode decoder router                                  */
       /* ------------------------------------------------------------ */
+      /* The receiver runs BOTH demodulators on the same PCM stream:
+           "fast" — QuadDecoder (4-FSK, 15 ms symbols, ~1.5 s/message)
+           "slow" — FskDecoder  (2-FSK, 100 ms symbols)
+         whichever acquires a real lock first "owns" the panel/status/log; the
+         other keeps listening silently and picks up the next packet. Errors
+         from an idle decoder are suppressed so ambient noise can't spam the
+         log. */
 
-      const decoder = new SS.Decoder({
-        onSync(meta) {
-          setStatus("decoding", "Preamble locked — decoding packet…");
-          setProgress(0.1,
-            "Synchronised (score " + meta.score.toFixed(2) + ") — receiving…");
-          appendLog("Preamble detected (score " + meta.score.toFixed(2) + ").");
-        },
+      let activeId = null;
+      const MODE_LABEL = { fast: "Fast (4-FSK)", slow: "Slow (2-FSK)" };
 
-        onMessage(text, meta) {
-          received.value = text;
-          lastMessageLen = meta.bytes;
-          lastSymbols = meta.totalBits;
-          copyBtn.disabled = false;
-          setStatus("received",
-            "Message received (" + meta.bytes + " bytes · " +
-            meta.totalBits + " bits) — CRC32 verified.");
-          setProgress(1, "Packet verified with CRC32 — complete.");
-          appendLog("Message received: " + JSON.stringify(text));
-        },
+      function makeHandlers(id) {
+        return {
+          onSync(meta) {
+            if (activeId !== null && activeId !== id) return;
+            activeId = id;
+            setStatus("decoding",
+              MODE_LABEL[id] + " preamble locked — decoding packet…");
+            setProgress(0.1, "Synchronised (score " +
+              meta.score.toFixed(2) + ") — receiving…");
+            appendLog("[" + id + "] Preamble detected (score " +
+              meta.score.toFixed(2) + ").");
+          },
 
-        onError(reason) {
-          setStatus("error", reason);
-          setProgress(0, "Packet rejected — listening for the next transmission.");
-          appendLog("Error: " + reason);
-        },
+          onMessage(text, meta) {
+            activeId = null;
+            received.value = text;
+            lastMessageLen = meta.bytes;
+            lastSymbols = meta.totalBits;
+            copyBtn.disabled = false;
+            setStatus("received", "Message received (" + meta.bytes +
+              " bytes · " + meta.totalBits + " bits, " + MODE_LABEL[id] +
+              ") — CRC32 verified.");
+            setProgress(1, "Packet verified with CRC32 — complete.");
+            appendLog("[" + id + "] Message received: " + JSON.stringify(text));
+          },
 
-        onDebug(d) {
-          /* Update the debug grid ~ every frame is fine; cheap enough. */
-          dbg.state.textContent = d.state;
-          dbg.freq.textContent = d.measuredHz ? d.measuredHz + " Hz" : "—";
-          dbg.bit.textContent = d.lastBit == null ? "—" : String(d.lastBit);
-          dbg.packet.textContent = d.bitProgress;
-          dbg.score.textContent = d.score ? d.score.toFixed(2) : "—";
-          dbg.len.textContent = d.payloadLen == null ? "—" : d.payloadLen + " B";
-          dbg.soft.textContent = d.lastSoft;
-          dbg.ctx.textContent = rx.ctx ? rx.ctx.state : (d.frameIndex ? "closed" : "—");
+          onError(reason) {
+            /* Only surface errors that belong to the currently-active decoder
+               (i.e. a real transmission failed). Idle-decoder noise is ignored. */
+            if (activeId !== null && activeId !== id) return;
+            activeId = null;
+            setStatus("error", reason);
+            setProgress(0, "Packet rejected — listening for the next transmission.");
+            appendLog("[" + id + "] Error: " + reason);
+          },
 
-          /* Liveness heartbeat for the watchdog + frames/sec readout. */
-          const now = Date.now();
-          if (d.frameIndex) {
-            if (lastFrameIndex && now - lastHeartbeatAt < 5000) {
-              const dt = (now - lastHeartbeatAt) / 1000;
-              const fps = dt > 0 ? (d.frameIndex - lastFrameIndex) / dt : 0;
-              if (fps > 0) dbg.fps.textContent = fps.toFixed(0) + " f/s";
+          onDebug(d) {
+            /* Single live panel: the active decoder while a lock is held,
+               otherwise the fast mode's live readout (the default). */
+            if (activeId === null) {
+              if (id !== "fast") return;
+            } else if (activeId !== id) {
+              return;
             }
-            lastFrameIndex = d.frameIndex;
-            lastHeartbeatAt = now;
-            captureAliveAt = now;
-          }
+            dbg.state.textContent = d.state;
+            dbg.mode.textContent = activeId ? MODE_LABEL[activeId] : "Fast (4-FSK)";
+            dbg.freq.textContent = d.measuredHz ? d.measuredHz + " Hz" : "—";
+            dbg.bit.textContent = d.lastBit == null ? "—" : String(d.lastBit);
+            dbg.packet.textContent = d.bitProgress;
+            dbg.score.textContent = d.score ? d.score.toFixed(2) : "—";
+            dbg.len.textContent = d.payloadLen == null ? "—" : d.payloadLen + " B";
+            dbg.soft.textContent = d.lastSoft;
+            dbg.ctx.textContent = rx.ctx ? rx.ctx.state :
+              (d.frameIndex ? "closed" : "—");
 
-          /* While decoding, animate the progress bar with received symbols. */
-          if (d.state === "synced" && d.totalSymbols > 0) {
-            setProgress(Math.min(0.95, d.symbolIndex / d.totalSymbols),
-              "Decoding " + d.symbolIndex + " / " + d.totalSymbols + " symbols");
-          }
-        },
-      });
+            /* Liveness heartbeat for the watchdog + frames/sec readout. */
+            const now = Date.now();
+            if (d.frameIndex) {
+              if (lastFrameIndex && now - lastHeartbeatAt < 5000) {
+                const dt = (now - lastHeartbeatAt) / 1000;
+                const fps = dt > 0 ? (d.frameIndex - lastFrameIndex) / dt : 0;
+                if (fps > 0) dbg.fps.textContent = fps.toFixed(0) + " f/s";
+              }
+              lastFrameIndex = d.frameIndex;
+              lastHeartbeatAt = now;
+              captureAliveAt = now;
+            }
 
-      decoder.setSampleRate(44100); /* corrected on start() if different */
+            /* While decoding, animate the progress bar with received symbols. */
+            if (d.state === "synced" && d.totalSymbols > 0) {
+              setProgress(Math.min(0.95, d.symbolIndex / d.totalSymbols),
+                "Decoding " + d.symbolIndex + " / " + d.totalSymbols + " symbols");
+            }
+          },
+        };
+      }
+
+      const decFast = new SS.QuadDecoder(
+        makeHandlers("fast"), { sampleRate: 44100 });
+      const decSlow = new SS.Decoder(
+        makeHandlers("slow"), { sampleRate: 44100 });
+
+      const ALL_DECODERS = [decFast, decSlow];
+      const configureRate = (fs) => {
+        decFast.setSampleRate(fs);
+        decSlow.setSampleRate(fs);
+      };
+      configureRate(44100); /* corrected from the live context on start() */
 
       /* ------------------------------------------------------------ */
       /* Start / stop                                                  */
@@ -212,13 +254,14 @@
         listenBtn.disabled = true;
         try {
           await rx.start((chunk) => {
-            /* Configure the decoder with the real device rate before the
+            /* Configure the decoders with the real device rate before the
                first audio chunk is processed. */
             if (!rateConfigured && rx.ctx) {
-              decoder.setSampleRate(rx.ctx.sampleRate);
+              configureRate(rx.ctx.sampleRate);
               rateConfigured = true;
             }
-            decoder.processSamples(chunk);
+            decFast.processSamples(chunk);
+            decSlow.processSamples(chunk);
           });
         } catch (e) {
           setStatus("error", "Microphone unavailable — " + e.message);
@@ -227,7 +270,7 @@
           return;
         }
         if (rx.ctx && rx.ctx.state === "running") {
-          decoder.setSampleRate(rx.ctx.sampleRate);
+          configureRate(rx.ctx.sampleRate);
         }
         stopBtn.disabled = false;
         copyBtn.disabled = received.value.length === 0;
@@ -246,12 +289,14 @@
         listenBtn.disabled = false;
         stopBtn.disabled = true;
         listening = false;
+        activeId = null;
         if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
         try { await rx.stop(); } catch (e) { /* noop */ }
-        decoder.reset();
+        ALL_DECODERS.forEach((d) => d.reset());
         setStatus("idle", "Stopped listening.");
         appendLog("Listening stopped.");
         dbg.state.textContent = "—";
+        dbg.mode.textContent = "—";
         dbg.freq.textContent = "—";
         dbg.bit.textContent = "—";
         dbg.packet.textContent = "—";
@@ -284,17 +329,19 @@
           "(attempt " + autoRestarts + " of 3).");
         setStatus("listening", "Recovering audio capture…");
         try { await rx.stop(); } catch (e) { /* noop */ }
-        decoder.reset();
+        ALL_DECODERS.forEach((d) => d.reset());
+        activeId = null;
         captureAliveAt = Date.now();
         try {
           await rx.start((chunk) => {
             if (!rateConfigured && rx.ctx) {
-              decoder.setSampleRate(rx.ctx.sampleRate);
+              configureRate(rx.ctx.sampleRate);
               rateConfigured = true;
             }
-            decoder.processSamples(chunk);
+            decFast.processSamples(chunk);
+            decSlow.processSamples(chunk);
           });
-          decoder.setSampleRate(rx.ctx.sampleRate);
+          configureRate(rx.ctx.sampleRate);
           setStatus("listening", "Listening on the microphone…");
           appendLog("Receiver restarted by health check.");
         } catch (e) {
